@@ -4,78 +4,47 @@
 #include <assert.h>
 #include <readline/readline.h>
 #include <readline/history.h>
-#include <mpd/client.h>
 #include <string.h>
 #include <strings.h>
-
-
+#include "mpccmd.h"
 
 
 struct mpd_connection *connection = NULL;
-typedef struct _State State;
 
-typedef enum _COMMANDS {
-    CONNECT,
-    DISCONNECT,
-    PLAYLIST,
-    ADD,
-    CLEAR,
-    PLAY,
-    PAUSE,
-    NEXT,
-    PREVIOUS,
-    STOP,
-    HELP,
-    QUIT,
-    NONE,
-    NUM_CMDS
-} COMMANDS;
+typedef enum _StateFlags {
+    NONE = 0,
+    NEEDS_CONNECTION = 1
 
+}StateFlags;
 
-typedef struct _CommandModule {
+struct _CommandModule {
     const char *name;
     void (*handler)(State *st);
-}CommandModule;
+    StateFlags      flags;
+};
 
-
-
-
-struct _State{
-    COMMANDS state;
-    const char *command;
-    char *arguments;
+static const CommandModule mpccmd_commands[]  = {
+    {"connect",     &handle_connect,    NONE },
+    {"disconnect",  NULL,               NEEDS_CONNECTION},
+    {"play",        &handle_play,       NEEDS_CONNECTION},
+    {"pause",       &handle_pause,      NEEDS_CONNECTION},
+    {"next",        &handle_next,       NEEDS_CONNECTION},
+    {"previous",    &handle_previous,   NEEDS_CONNECTION},
+    {"stop",        &handle_stop,       NEEDS_CONNECTION},
+    {"help",        NULL,               NONE},
+    {NULL,        NULL}
 };
 
 
-
-void handle_connect(State *st);
-void handle_next(State *st);
-void handle_pause(State *st);
-void handle_play(State *st);
-
-static const CommandModule mpccmd_commands[NUM_CMDS+1]  = {
-    {"connect",     &handle_connect },
-    {"disconnect",  NULL},
-    {"playlist",    NULL},
-    {"add",         NULL},
-    {"clear",       NULL},
-    {"play",        &handle_play},
-    {"pause",       &handle_pause},
-    {"next",        &handle_next},
-    {"previous",    NULL},
-    {"stop",        NULL},
-    {"help",        NULL},
-    {"quit",        NULL},
-    {"none",        NULL}
-};
-static COMMANDS state = NONE;
-
-
+bool state_is_valid(const State *st)
+{
+    return (st->cmd != NULL);
+}
 
 State *state_new()
 {
     State *st = (State *)malloc(sizeof(*st));
-    st->state = NONE;
+    st->cmd = NULL;
     st->command = NULL;
     st->arguments = NULL;
     return st;
@@ -113,38 +82,19 @@ void handle_connect(State *st)
     }
 }
 
-void handle_next(State *st)
+void state_execute(State *st)
 {
-    assert(connection != NULL);
-    printf("Skipping song\n");
-    mpd_run_next(connection);
-}
-
-void handle_pause(State *st)
-{
-    assert(connection != NULL);
-    printf("Toggling paused state\n");
-    mpd_run_toggle_pause(connection);
-
-}
-
-void handle_play(State *st)
-{
-    assert(connection != NULL);
-    printf("Play song\n");
-    if(st->arguments == NULL || st->arguments[0] == '\0')
+    if(st == NULL || st->cmd == NULL) return;
+    if(st->cmd->handler != NULL)
     {
-        mpd_run_play(connection);
-    }
-}
-
-
-void execute_state(State *st)
-{
-    const CommandModule *cmd = &mpccmd_commands[st->state];
-    if(cmd->handler != NULL)
-    {
-        cmd->handler(st);
+        if(st->cmd->flags&NEEDS_CONNECTION) {
+            // Check connection.
+            if(connection == NULL) {
+                printf("This commands requires you to be connected to a MPD server.\n");
+                return;
+            }
+        }
+        st->cmd->handler(st);
     }
 }
 
@@ -154,12 +104,12 @@ static State *parse_state(const char *text)
     State *state = state_new();
     const char *index = text;
 
-    for ( COMMANDS i = CONNECT; i < NUM_CMDS; i++) {
+    for ( int i = 0; mpccmd_commands[i].name != NULL ; i++) {
         int cmd_length = strlen(mpccmd_commands[i].name);
         if(strncasecmp(mpccmd_commands[i].name, text, cmd_length) == 0) {
             if(text[cmd_length] == '\0'  || whitespace(text[cmd_length]))
             {
-                state->state = i;
+                state->cmd = &(mpccmd_commands[i]);
                 state->command = mpccmd_commands[i].name;
 
                 const char *p = index+strlen(mpccmd_commands[i].name);
@@ -219,7 +169,7 @@ static char** my_completion( const char * text , int start,  int end)
     matches = (char **)NULL;
     State *st = parse_state(rl_line_buffer);
 
-    if(st->state == NONE)
+    if(!state_is_valid(st))
         matches = rl_completion_matches ((char*)text, &my_generator);
 
     state_free(&st);
@@ -230,7 +180,7 @@ int custom_complete(int a, int b)
 {
     State *st = parse_state(rl_line_buffer);
     int val = 0;
-    if(st->state == NONE)
+    if(!state_is_valid(st))
     {
         val = rl_complete(a,b);
     }else {
@@ -247,6 +197,7 @@ void run()
 
     // Set custom completion.
     rl_attempted_completion_function = my_completion;
+    rl_menu_completion_entry_function= my_generator;
     rl_completion_entry_function = NULL;
     rl_attempted_completion_over=1;
 
@@ -267,7 +218,7 @@ void run()
             break;
 
         State *st = parse_state(input);
-        execute_state(st);
+        state_execute(st);
         state_free(&st);
 
         // Add input to history.
@@ -275,9 +226,6 @@ void run()
 
         // Free input.
         free(input);
-
-        // Reset state.
-        state = NONE;
     }
 }
 
@@ -288,4 +236,3 @@ int main()
     // Cleanup
     run();
 }
-
