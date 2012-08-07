@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <assert.h>
+#include <errno.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <string.h>
@@ -12,6 +13,7 @@
 
 
 struct mpd_connection *connection = NULL;
+bool quit = false;
 
 typedef enum _StateFlags {
     NONE = 0,
@@ -33,6 +35,7 @@ static const CommandModule mpccmd_commands[]  = {
     {"next",        &handle_next,       NEEDS_CONNECTION},
     {"previous",    &handle_previous,   NEEDS_CONNECTION},
     {"stop",        &handle_stop,       NEEDS_CONNECTION},
+    {"quit",        &handle_quit,       NONE},
     {"help",        NULL,               NONE},
     {NULL,        NULL}
 };
@@ -59,6 +62,11 @@ void state_free(State ** state)
     *state = NULL;
 }
 
+
+void handle_quit(State *st)
+{
+    quit = true;
+}
 /**
  * Handle connect command.
  */
@@ -191,6 +199,8 @@ int custom_complete(int a, int b)
     return val;
 }
 
+
+static bool has_idle = false;
 void my_rlhandler(char* line)
 {
     if(line==NULL)
@@ -200,6 +210,12 @@ void my_rlhandler(char* line)
     }
     else
     {
+        if(connection != NULL) {
+            if(has_idle) {
+                mpd_run_noidle(connection);
+                has_idle = false;
+            }
+        }
         State *st = parse_state(line);
         state_execute(st);
         state_free(&st);
@@ -232,58 +248,55 @@ void run()
     rl_callback_handler_install(shell_prompt, (rl_vcpfunc_t*) &my_rlhandler);
     // While loop.
     fd_set rfds;
-    struct timeval tv;
     int retval;
 
     /* Watch stdin (fd 0) to see when it has input. */
 
 
-    for(;;) {
+    while (!quit ) {
+        int length = 1;
         FD_ZERO(&rfds);
         FD_SET(0, &rfds);
-        if(connection != NULL) {
+        if(connection != NULL)
+        {
             // Start idle mode.
-            mpd_send_idle(connection);
-            // Get async.
-            struct mpd_async *ma = mpd_connection_get_async(connection);
+            if(!has_idle) {
+                mpd_send_idle(connection);
+                has_idle = true;
+            }
             // wait on fd for input.
-            FD_SET(mpd_async_get_fd(ma), &rfds);
-
+            FD_SET(mpd_connection_get_fd(connection), &rfds);
+            length = (length > (mpd_connection_get_fd(connection)+1))?length:(mpd_connection_get_fd(connection)+1);
         }
-        /* Wait up to five seconds. */
-        tv.tv_sec = -1;
-        tv.tv_usec = 0;
-        retval = select(1, &rfds, NULL, NULL, &tv);
-        if(FD_ISSET(0, &rfds))
+
+        retval = select(length, &rfds, NULL, NULL, NULL);
+        if(FD_ISSET(0, &rfds)) {
             rl_callback_read_char();
+        }
+        else if(connection != NULL && length > 1 &&  FD_ISSET(mpd_connection_get_fd(connection), &rfds)){
+            int mask = mpd_recv_idle(connection, true);
+            if(mpd_connection_get_error(connection)){
+                printf("%s\n", mpd_connection_get_error_message(connection));
+                exit(0);
+            }
+
+            struct mpd_song *sg = mpd_run_current_song(connection);
+            if(sg) {
+                printf("\nCurrent Song: %s - %s\n", mpd_song_get_tag(sg,MPD_TAG_ARTIST, 0),  mpd_song_get_tag(sg,MPD_TAG_TITLE, 0));
+                rl_reset_line_state();
+                rl_on_new_line();
+                rl_redisplay();
+            }
+            has_idle = false;
+        }
         else {
-            rl_reset_line_state();
             printf("\nTick:\n");
+            rl_reset_line_state();
             rl_on_new_line();
             rl_redisplay();
         }
-#if 0
-        // Create prompt string from user name and current working directory.
-        snprintf(shell_prompt, sizeof(shell_prompt), "MPC: ");
-
-        // Display prompt and read input (n.b. input must be freed after use)...
-        input = readline(shell_prompt);
-
-        // Check for EOF.
-        if (!input)
-            break;
-
-        State *st = parse_state(input);
-        state_execute(st);
-        state_free(&st);
-
-        // Add input to history.
-        add_history(input);
-
-        // Free input.
-        free(input);
-#endif
     }
+    rl_callback_handler_remove();
 }
 
 

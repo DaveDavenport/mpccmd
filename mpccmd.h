@@ -17,4 +17,5 @@ struct _State{
 #include "mpc_player.h"
 
 void handle_connect(State *st);
+void handle_quit(State *st);
 #endif
