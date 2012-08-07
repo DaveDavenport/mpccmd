@@ -261,7 +261,7 @@ void run()
         {
             // Start idle mode.
             if(!has_idle) {
-                mpd_send_idle(connection);
+                mpd_send_idle_mask(connection, MPD_IDLE_PLAYER);
                 has_idle = true;
             }
             // wait on fd for input.
@@ -273,7 +273,7 @@ void run()
         if(FD_ISSET(0, &rfds)) {
             rl_callback_read_char();
         }
-        else if(connection != NULL && length > 1 &&  FD_ISSET(mpd_connection_get_fd(connection), &rfds)){
+        if(connection != NULL && length > 1 &&  FD_ISSET(mpd_connection_get_fd(connection), &rfds)){
             int mask = mpd_recv_idle(connection, true);
             if(mpd_connection_get_error(connection)){
                 printf("%s\n", mpd_connection_get_error_message(connection));
@@ -286,14 +286,9 @@ void run()
                 rl_reset_line_state();
                 rl_on_new_line();
                 rl_redisplay();
+                mpd_song_free(sg);
             }
             has_idle = false;
-        }
-        else {
-            printf("\nTick:\n");
-            rl_reset_line_state();
-            rl_on_new_line();
-            rl_redisplay();
         }
     }
     rl_callback_handler_remove();
