@@ -6,6 +6,8 @@
 #include <readline/history.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/select.h>
+#include <mpd/async.h>
 #include "mpccmd.h"
 
 
@@ -188,6 +190,26 @@ int custom_complete(int a, int b)
     }
     return val;
 }
+
+void my_rlhandler(char* line)
+{
+    if(line==NULL)
+    {
+        // Ctrl-D will allow us to exit nicely
+        printf("\nNULLBURGER\n");
+    }
+    else
+    {
+        State *st = parse_state(line);
+        state_execute(st);
+        state_free(&st);
+        if(*line!=0){
+            // If line wasn't empty, store it so that uparrow retrieves it
+            add_history(line);
+        }
+    }
+}
+
 /**
  * @brief
  */
@@ -201,12 +223,46 @@ void run()
     rl_completion_entry_function = NULL;
     rl_attempted_completion_over=1;
 
-    // While loop.
-    for(;;) {
-        // Configure readline to auto-complete paths when the tab key is hit.
-        rl_bind_key('\t', rl_complete);
-        rl_bind_key(' ', custom_complete);
+    // Configure readline to auto-complete paths when the tab key is hit.
+    rl_bind_key('\t', rl_complete);
+    rl_bind_key(' ', custom_complete);
 
+    snprintf(shell_prompt, 1024, "MPC: ");
+    // Install the handler
+    rl_callback_handler_install(shell_prompt, (rl_vcpfunc_t*) &my_rlhandler);
+    // While loop.
+    fd_set rfds;
+    struct timeval tv;
+    int retval;
+
+    /* Watch stdin (fd 0) to see when it has input. */
+
+
+    for(;;) {
+        FD_ZERO(&rfds);
+        FD_SET(0, &rfds);
+        if(connection != NULL) {
+            // Start idle mode.
+            mpd_send_idle(connection);
+            // Get async.
+            struct mpd_async *ma = mpd_connection_get_async(connection);
+            // wait on fd for input.
+            FD_SET(mpd_async_get_fd(ma), &rfds);
+
+        }
+        /* Wait up to five seconds. */
+        tv.tv_sec = -1;
+        tv.tv_usec = 0;
+        retval = select(1, &rfds, NULL, NULL, &tv);
+        if(FD_ISSET(0, &rfds))
+            rl_callback_read_char();
+        else {
+            rl_reset_line_state();
+            printf("\nTick:\n");
+            rl_on_new_line();
+            rl_redisplay();
+        }
+#if 0
         // Create prompt string from user name and current working directory.
         snprintf(shell_prompt, sizeof(shell_prompt), "MPC: ");
 
@@ -226,6 +282,7 @@ void run()
 
         // Free input.
         free(input);
+#endif
     }
 }
 
