@@ -6,5 +6,6 @@ void handle_previous(State *st);
 void handle_pause(State *st);
 void handle_play(State *st);
 void handle_stop(State *st);
+void handle_add(State *st);
 
 #endif

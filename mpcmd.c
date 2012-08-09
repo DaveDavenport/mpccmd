@@ -13,7 +13,8 @@
 
 
 struct mpd_connection *connection = NULL;
-bool quit = false;
+static bool quit = false;
+static bool has_idle = false;
 
 typedef enum _StateFlags {
     NONE = 0,
@@ -29,18 +30,21 @@ struct _CommandModule {
 
 static const CommandModule mpccmd_commands[]  = {
     {"connect",     &handle_connect,    NONE },
-    {"disconnect",  NULL,               NEEDS_CONNECTION},
+    {"disconnect",  &handle_disconnect, NEEDS_CONNECTION},
     {"play",        &handle_play,       NEEDS_CONNECTION},
     {"pause",       &handle_pause,      NEEDS_CONNECTION},
     {"next",        &handle_next,       NEEDS_CONNECTION},
     {"previous",    &handle_previous,   NEEDS_CONNECTION},
     {"stop",        &handle_stop,       NEEDS_CONNECTION},
+    {"add",         &handle_add,        NEEDS_CONNECTION},
     {"quit",        &handle_quit,       NONE},
-    {"help",        NULL,               NONE},
+    {"help",        &handle_help,       NONE},
     {NULL,        NULL}
 };
 
-
+/**
+ * State
+ */
 bool state_is_valid(const State *st)
 {
     return (st->cmd != NULL);
@@ -62,6 +66,13 @@ void state_free(State ** state)
     *state = NULL;
 }
 
+void handle_help(State *st)
+{
+    for(int i = 0; mpccmd_commands[i].name != NULL; i++)
+    {
+        printf("%s: \n", mpccmd_commands[i].name);
+    }
+}
 
 void handle_quit(State *st)
 {
@@ -89,6 +100,14 @@ void handle_connect(State *st)
         printf("Failed to connect: %i\n", mpd_connection_get_error(connection));
         mpd_connection_free(connection);
         connection =  NULL;
+    }
+}
+
+void handle_disconnect(State *st)
+{
+    if(connection != NULL) {
+        mpd_connection_free(connection);
+        connection = NULL;
     }
 }
 
@@ -156,11 +175,45 @@ static char* my_generator(const char* text, int state)
         list_index++;
 
         if (strncasecmp (name, text, len) == 0)
+        {
             return (strdup(name));
+        }
     }
 
     /* If no names matched, then return NULL. */
     return ((char *)NULL);
+}
+
+static char * my_tag_generator(const char *text, int state)
+{
+    static int tag_list_index, tag_len;
+    const char *name;
+    if(!state) {
+        tag_list_index = 0;
+        tag_len = strlen (text);
+    }
+    while(tag_list_index < MPD_TAG_COUNT)
+    {
+        name = mpd_tag_name(tag_list_index);
+        tag_list_index++;
+        if(strncasecmp(name, text, tag_len) == 0)
+        {
+            return (strdup(name));
+        }
+
+    }
+    return ((char*)NULL);
+}
+
+static char * my_tag_lookup_generator(const char *text, int state)
+{
+    if(!state) {
+
+    }
+
+
+
+
 }
 
 /**
@@ -179,8 +232,13 @@ static char** my_completion( const char * text , int start,  int end)
     matches = (char **)NULL;
     State *st = parse_state(rl_line_buffer);
 
-    if(!state_is_valid(st))
+    if(!state_is_valid(st)) {
+        rl_completion_append_character = ' ';
         matches = rl_completion_matches ((char*)text, &my_generator);
+    } else {
+        rl_completion_append_character = '=';
+        matches =  rl_completion_matches ((char*)text, &my_tag_generator);
+    }
 
     state_free(&st);
     return (matches);
@@ -196,17 +254,18 @@ int custom_complete(int a, int b)
     }else {
         val = rl_insert(a,b);
     }
+    state_free(&st);
     return val;
 }
 
 
-static bool has_idle = false;
 void my_rlhandler(char* line)
 {
     if(line==NULL)
     {
         // Ctrl-D will allow us to exit nicely
-        printf("\nNULLBURGER\n");
+        printf("Quitting...\n");
+        quit = true;
     }
     else
     {
@@ -216,9 +275,13 @@ void my_rlhandler(char* line)
                 has_idle = false;
             }
         }
+
+        // Get the current state.
         State *st = parse_state(line);
         state_execute(st);
         state_free(&st);
+
+
         if(*line!=0){
             // If line wasn't empty, store it so that uparrow retrieves it
             add_history(line);
@@ -226,12 +289,26 @@ void my_rlhandler(char* line)
     }
 }
 
+static char *custom_break()
+{
+    State *st = parse_state(rl_line_buffer);
+    char *name = NULL;
+
+    if(state_is_valid(st)) {
+        name = strdup(" =");
+    }else {
+        name = strdup(" ");
+    }
+    state_free(&st);
+    return name;
+}
+
 /**
  * @brief
  */
 void run()
 {
-    char shell_prompt[1024], *input;
+    char shell_prompt[256];
 
     // Set custom completion.
     rl_attempted_completion_function = my_completion;
@@ -243,7 +320,7 @@ void run()
     rl_bind_key('\t', rl_complete);
     rl_bind_key(' ', custom_complete);
 
-    snprintf(shell_prompt, 1024, "MPC: ");
+    snprintf(shell_prompt, 256, "MPC: ");
     // Install the handler
     rl_callback_handler_install(shell_prompt, (rl_vcpfunc_t*) &my_rlhandler);
     // While loop.
@@ -251,7 +328,7 @@ void run()
     int retval;
 
     /* Watch stdin (fd 0) to see when it has input. */
-
+    rl_completion_word_break_hook = custom_break;
 
     while (!quit ) {
         int length = 1;
@@ -274,7 +351,7 @@ void run()
             rl_callback_read_char();
         }
         if(connection != NULL && length > 1 &&  FD_ISSET(mpd_connection_get_fd(connection), &rfds)){
-            int mask = mpd_recv_idle(connection, true);
+            mpd_recv_idle(connection, true);
             if(mpd_connection_get_error(connection)){
                 printf("%s\n", mpd_connection_get_error_message(connection));
                 exit(0);
